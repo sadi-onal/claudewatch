@@ -17,18 +17,14 @@ from backend.detectors.conversation_log import (
 )
 from backend.detectors.filesystem_watch import FilesystemWatcher
 from backend.detectors.git_context import get_git_context
-from backend.detectors.iterm_applescript import (
-    link_pids_to_iterm_applescript,
-    list_iterm_sessions_via_applescript,
-)
-from backend.detectors.iterm_detector import link_pids_to_iterm
+from backend.detectors.iterm_cache import ItermLocation, ItermLocationCache
 from backend.detectors.process_detector import (
     CpuHistory,
     ProcInfo,
     infer_status,
     scan_claude_processes,
 )
-from backend.detectors.tmux_detector import link_pids_to_tmux
+from backend.detectors.tmux_cache import TmuxLocationCache
 from backend.models import (
     ClaudeSession,
     FileChange,
@@ -60,7 +56,6 @@ class LinkerState:
     log_cache: dict[Path, tuple[float, ParsedLog]] = field(default_factory=dict)
     git_cache: dict[str, tuple[float, GitContext | None]] = field(default_factory=dict)
     log_dir: Path | None = None
-    iterm_available: bool = True
 
 
 def _load_log_cached(state: LinkerState, path: Path) -> ParsedLog:
@@ -105,6 +100,8 @@ async def build_sessions(
     config: dict[str, Any],
     state: LinkerState,
     watcher: FilesystemWatcher | None = None,
+    iterm_cache: ItermLocationCache | None = None,
+    tmux_cache: TmuxLocationCache | None = None,
 ) -> list[ClaudeSession]:
     if state.log_dir is None:
         state.log_dir = find_log_dir()
@@ -114,14 +111,12 @@ async def build_sessions(
     pid_set = set(pids)
     _prune_cpu_history(state, pid_set)
 
-    # Concurrent location lookups
-    iterm_task = asyncio.create_task(link_pids_to_iterm(pids)) if pids else None
-    tmux_loc_map = await asyncio.to_thread(link_pids_to_tmux, pids)
-    iterm_loc_map = await iterm_task if iterm_task else {}
-    # Fallback: AppleScript-based iTerm linking when Python API didn't link anyone.
-    iterm_tty_map: dict[int, Any] = {}
-    if pids and not iterm_loc_map:
-        iterm_tty_map = await asyncio.to_thread(link_pids_to_iterm_applescript, pids)
+    # Location lookups read from in-memory caches refreshed by independent
+    # background tasks. No I/O to iTerm or tmux happens on this code path.
+    iterm_loc_map: dict[int, ItermLocation] = (
+        iterm_cache.get_locations(pids) if iterm_cache and pids else {}
+    )
+    tmux_loc_map = tmux_cache.get_locations(pids) if tmux_cache and pids else {}
 
     pricing_cfg = config.get("pricing", {})
     file_retention = int(config.get("file_change_retention_minutes", 10))
@@ -164,17 +159,14 @@ async def build_sessions(
         iterm_session_id = iterm_tab_title = iterm_tty = None
         tmux_session = tmux_window = tmux_pane = None
 
-        def _apply_iterm_python(iloc: Any) -> None:
-            nonlocal iterm_window_id, iterm_tab_id, iterm_session_id, iterm_tab_title
-            iterm_window_id, iterm_tab_id = iloc.window_id, iloc.tab_id
-            iterm_session_id, iterm_tab_title = iloc.session_id, iloc.tab_title
-
-        def _apply_iterm_tty(iloc: Any) -> None:
-            nonlocal iterm_window_id, iterm_tab_index, iterm_session_id, iterm_tab_title, iterm_tty
+        def _apply_iterm(iloc: ItermLocation) -> None:
+            nonlocal iterm_window_id, iterm_tab_id, iterm_tab_index
+            nonlocal iterm_session_id, iterm_tab_title, iterm_tty
             iterm_window_id = iloc.window_id
+            iterm_tab_id = iloc.tab_id
             iterm_tab_index = iloc.tab_index
-            iterm_session_id = iloc.unique_id
-            iterm_tab_title = iloc.name
+            iterm_session_id = iloc.session_id
+            iterm_tab_title = iloc.tab_title
             iterm_tty = iloc.tty
 
         if p.pid in tmux_loc_map:
@@ -182,15 +174,10 @@ async def build_sessions(
             loc = tmux_loc_map[p.pid]
             tmux_session, tmux_window, tmux_pane = loc.session, loc.window, loc.pane
             if p.pid in iterm_loc_map:
-                _apply_iterm_python(iterm_loc_map[p.pid])
-            elif p.pid in iterm_tty_map:
-                _apply_iterm_tty(iterm_tty_map[p.pid])
+                _apply_iterm(iterm_loc_map[p.pid])
         elif p.pid in iterm_loc_map:
             location_type = "iterm"
-            _apply_iterm_python(iterm_loc_map[p.pid])
-        elif p.pid in iterm_tty_map:
-            location_type = "iterm"
-            _apply_iterm_tty(iterm_tty_map[p.pid])
+            _apply_iterm(iterm_loc_map[p.pid])
 
         # Usage + cost
         usage: TokenUsage | None = None

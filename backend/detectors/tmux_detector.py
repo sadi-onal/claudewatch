@@ -3,7 +3,6 @@ from __future__ import annotations
 import shutil
 import subprocess
 from dataclasses import dataclass
-from typing import Iterable
 
 import psutil
 
@@ -93,21 +92,3 @@ def _descendants(root_pid: int, max_depth: int = 10) -> set[int]:
     return seen
 
 
-def link_pids_to_tmux(
-    claude_pids: Iterable[int],
-    panes: list[TmuxPane] | None = None,
-) -> dict[int, TmuxLocation]:
-    if panes is None:
-        panes = list_tmux_panes()
-    if not panes:
-        return {}
-    out: dict[int, TmuxLocation] = {}
-    pid_set = set(claude_pids)
-    for pane in panes:
-        kids = _descendants(pane.pane_pid)
-        matched = pid_set & kids
-        for pid in matched:
-            out[pid] = TmuxLocation(
-                session=pane.session, window=pane.window, pane=pane.pane
-            )
-    return out

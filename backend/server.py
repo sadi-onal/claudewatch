@@ -14,7 +14,9 @@ from fastapi.staticfiles import StaticFiles
 from backend.api import actions, config_api, health, history, sessions, stream
 from backend.config import STATE_DB, load_config
 from backend.detectors.filesystem_watch import FilesystemWatcher
+from backend.detectors.iterm_cache import ItermLocationCache
 from backend.detectors.linker import LinkerState, build_sessions
+from backend.detectors.tmux_cache import TmuxLocationCache
 from backend.models import ClaudeSession
 from backend.state import State
 
@@ -31,6 +33,8 @@ class AppState:
     sessions_started_at: dict[int, Any] = field(default_factory=dict)
     linker_state: LinkerState = field(default_factory=LinkerState)
     fs_watcher: FilesystemWatcher | None = None
+    iterm_cache: ItermLocationCache | None = None
+    tmux_cache: TmuxLocationCache | None = None
     state: State | None = None
     sse_queues: set[asyncio.Queue] = field(default_factory=set)
 
@@ -49,7 +53,13 @@ async def _scheduler_loop(s: AppState) -> None:
     interval = float(s.config.get("process_scan_interval_seconds", 2))
     while True:
         try:
-            new_sessions = await build_sessions(s.config, s.linker_state, s.fs_watcher)
+            new_sessions = await build_sessions(
+                s.config,
+                s.linker_state,
+                s.fs_watcher,
+                iterm_cache=s.iterm_cache,
+                tmux_cache=s.tmux_cache,
+            )
             prev = s.sessions
             new_map = {x.pid: x for x in new_sessions}
 
@@ -90,8 +100,22 @@ async def lifespan(app: FastAPI):
         retention_minutes=int(cfg.get("file_change_retention_minutes", 10)),
         ignore_patterns=cfg.get("ignore_patterns", []),
     )
-    s = AppState(config=cfg, state=state, fs_watcher=fs_watcher)
+    iterm_cache = ItermLocationCache(
+        refresh_interval=float(cfg.get("iterm_refresh_interval_seconds", 5)),
+    )
+    tmux_cache = TmuxLocationCache(
+        refresh_interval=float(cfg.get("tmux_refresh_interval_seconds", 5)),
+    )
+    s = AppState(
+        config=cfg,
+        state=state,
+        fs_watcher=fs_watcher,
+        iterm_cache=iterm_cache,
+        tmux_cache=tmux_cache,
+    )
     app.state.s = s
+    await iterm_cache.start()
+    await tmux_cache.start()
     task = asyncio.create_task(_scheduler_loop(s))
     log.info("ClaudeWatch backend started on http://127.0.0.1:%d", int(cfg.get("port", 7788)))
     try:
@@ -102,6 +126,8 @@ async def lifespan(app: FastAPI):
             await task
         except asyncio.CancelledError:
             pass
+        await iterm_cache.stop()
+        await tmux_cache.stop()
         await fs_watcher.stop_all()
 
 
