@@ -237,7 +237,14 @@ async def build_sessions(
         current_task_elapsed = None
         if parsed:
             lt = parsed.last_assistant_usage
-            context_tokens = lt.input_tokens + lt.cache_read_input_tokens + lt.cache_creation_input_tokens
+            # Output tokens count toward the context window too: they become part of the
+            # conversation history that's re-sent on the next turn.
+            context_tokens = (
+                lt.input_tokens
+                + lt.output_tokens
+                + lt.cache_read_input_tokens
+                + lt.cache_creation_input_tokens
+            )
             context_max = _context_max_for_model(model)
             # Heuristic: if the session has already exceeded the standard 200k cap, it must be running
             # the 1M-context variant (Claude Code would otherwise have errored out). Upgrade the cap.

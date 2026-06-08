@@ -324,6 +324,30 @@ async def test_duplicate_session_detection_same_env_session_id(tmp_path):
     assert by_pid[12].duplicate_pids == []
 
 
+async def test_context_tokens_includes_output(tmp_path):
+    """Output tokens of the latest turn count toward the context window (they become part of
+    the conversation history re-sent next turn), so context_tokens must include them."""
+    cwd = "/tmp/ctxcwd"
+    folder = tmp_path / "-tmp-ctxcwd"
+    folder.mkdir()
+    (folder / "ctx.jsonl").write_text(
+        '{"type":"assistant","message":{"model":"claude-opus-4-7","content":[],'
+        '"usage":{"input_tokens":1000,"output_tokens":500,'
+        '"cache_read_input_tokens":2000,"cache_creation_input_tokens":100}}}\n'
+    )
+    procs = [_proc(pid=1, cwd=cwd, env_session_id="ctx")]
+    state = LinkerState()
+    state.log_dir = tmp_path
+
+    with patch("backend.detectors.linker.scan_claude_processes", return_value=procs):
+        sessions = await build_sessions(
+            DEFAULT_CONFIG, state, iterm_cache=FakeItermCache(), tmux_cache=FakeTmuxCache()
+        )
+
+    s = sessions[0]
+    assert s.context_tokens == 1000 + 500 + 2000 + 100  # input + output + cache_read + cache_creation
+
+
 async def test_build_sessions_no_log_gracefully(tmp_path):
     procs = [_proc(pid=42, cwd="/some/path/that/has/no/logs")]
     state = LinkerState()
