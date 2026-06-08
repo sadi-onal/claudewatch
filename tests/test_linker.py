@@ -37,7 +37,13 @@ class FakeTmuxCache:
         return {p: loc for p, loc in self.locations.items() if p in pids}
 
 
-def _proc(pid: int, cwd: str, model: str | None = None, session_id: str | None = None) -> ProcInfo:
+def _proc(
+    pid: int,
+    cwd: str,
+    model: str | None = None,
+    session_id: str | None = None,
+    env_session_id: str | None = None,
+) -> ProcInfo:
     cmdline = ["claude"]
     if model:
         cmdline += ["--model", model]
@@ -52,6 +58,7 @@ def _proc(pid: int, cwd: str, model: str | None = None, session_id: str | None =
         memory_mb=200.0,
         cmdline=cmdline,
         cmdline_parsed={"model": model, "permission_mode_flag": None, "session_id": session_id, "extra_flags": []},
+        env_session_id=env_session_id,
     )
 
 
@@ -208,6 +215,113 @@ async def test_build_sessions_disambiguates_two_pids_same_cwd(tmp_path):
     assert by_pid[2].conversation_id == "beta"
     assert by_pid[2].usage.input_tokens == 200
     assert by_pid[2].model == "claude-sonnet-4-6"
+
+
+async def test_env_session_id_disambiguates_two_pids_same_cwd_no_cmdline(tmp_path):
+    """Real-world case: two claudes in the same cwd, neither started with --resume.
+
+    The only ground-truth link is the CLAUDE_CODE_SESSION_ID env var. Without it the
+    linker falls back to "freshest log in the folder" and mis-attributes both PIDs to
+    the same (latest-mtime) session.
+    """
+    cwd = "/tmp/envcwd"
+    folder = tmp_path / "-tmp-envcwd"
+    folder.mkdir()
+    (folder / "alpha.jsonl").write_text(
+        '{"type":"assistant","message":{"model":"claude-opus-4-7","content":[],"usage":{"input_tokens":100}}}\n'
+    )
+    (folder / "beta.jsonl").write_text(
+        '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[],"usage":{"input_tokens":200}}}\n'
+    )
+
+    procs = [
+        _proc(pid=1, cwd=cwd, env_session_id="alpha"),
+        _proc(pid=2, cwd=cwd, env_session_id="beta"),
+    ]
+    state = LinkerState()
+    state.log_dir = tmp_path
+
+    with patch("backend.detectors.linker.scan_claude_processes", return_value=procs):
+        sessions = await build_sessions(
+            DEFAULT_CONFIG, state, iterm_cache=FakeItermCache(), tmux_cache=FakeTmuxCache()
+        )
+
+    by_pid = {s.pid: s for s in sessions}
+    assert by_pid[1].conversation_id == "alpha"
+    assert by_pid[1].usage.input_tokens == 100
+    assert by_pid[1].model == "claude-opus-4-7"
+    assert by_pid[2].conversation_id == "beta"
+    assert by_pid[2].usage.input_tokens == 200
+    assert by_pid[2].model == "claude-sonnet-4-6"
+    # Distinct sessions → not duplicates
+    assert by_pid[1].duplicate_count == 1
+    assert by_pid[2].duplicate_count == 1
+
+
+async def test_env_session_id_from_other_cwd_is_ignored(tmp_path):
+    """macOS leaks the caller's CLAUDE_CODE_SESSION_ID onto processes whose env it can't read.
+
+    An env id whose log lives in a *different* project folder is bogus: it must be ignored
+    (not trusted as this process's session, and never counted as a duplicate). The process
+    should fall back to the real log in its own folder.
+    """
+    cwd = "/tmp/realcwd"
+    (tmp_path / "-tmp-realcwd").mkdir()
+    (tmp_path / "-tmp-realcwd" / "real-sess.jsonl").write_text(
+        '{"type":"assistant","message":{"model":"claude-opus-4-7","content":[],"usage":{"input_tokens":10}}}\n'
+    )
+    # The leaked id's log lives in a *different* folder.
+    (tmp_path / "-tmp-othercwd").mkdir()
+    (tmp_path / "-tmp-othercwd" / "leaked-id.jsonl").write_text(
+        '{"type":"assistant","message":{"content":[]}}\n'
+    )
+
+    procs = [_proc(pid=1, cwd=cwd, env_session_id="leaked-id")]
+    state = LinkerState()
+    state.log_dir = tmp_path
+
+    with patch("backend.detectors.linker.scan_claude_processes", return_value=procs):
+        sessions = await build_sessions(
+            DEFAULT_CONFIG, state, iterm_cache=FakeItermCache(), tmux_cache=FakeTmuxCache()
+        )
+
+    s = sessions[0]
+    assert s.session_id is None  # leaked env id rejected — its log isn't in this cwd
+    assert s.conversation_id == "real-sess"  # fell back to the real in-folder log
+    assert s.usage.input_tokens == 10
+    assert s.duplicate_count == 1
+
+
+async def test_duplicate_session_detection_same_env_session_id(tmp_path):
+    """Same Claude session attached from two CLIs → same CLAUDE_CODE_SESSION_ID → flagged."""
+    cwd = "/tmp/dupenv"
+    folder = tmp_path / "-tmp-dupenv"
+    folder.mkdir()
+    (folder / "shared.jsonl").write_text(
+        '{"type":"assistant","message":{"model":"claude-opus-4-7","content":[],"usage":{"input_tokens":50}}}\n'
+    )
+
+    procs = [
+        _proc(pid=10, cwd=cwd, env_session_id="shared"),
+        _proc(pid=11, cwd=cwd, env_session_id="shared"),
+        _proc(pid=12, cwd=cwd, env_session_id="lonely"),  # unique id, no log file
+    ]
+    state = LinkerState()
+    state.log_dir = tmp_path
+
+    with patch("backend.detectors.linker.scan_claude_processes", return_value=procs):
+        sessions = await build_sessions(
+            DEFAULT_CONFIG, state, iterm_cache=FakeItermCache(), tmux_cache=FakeTmuxCache()
+        )
+
+    by_pid = {s.pid: s for s in sessions}
+    assert by_pid[10].session_id == "shared"
+    assert by_pid[10].duplicate_count == 2
+    assert by_pid[11].duplicate_count == 2
+    assert set(by_pid[10].duplicate_pids) == {11}
+    assert set(by_pid[11].duplicate_pids) == {10}
+    assert by_pid[12].duplicate_count == 1
+    assert by_pid[12].duplicate_pids == []
 
 
 async def test_build_sessions_no_log_gracefully(tmp_path):

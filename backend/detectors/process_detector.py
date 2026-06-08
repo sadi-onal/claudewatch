@@ -121,6 +121,11 @@ class ProcInfo:
     memory_mb: float
     cmdline: list[str]
     cmdline_parsed: dict[str, Any]
+    # Ground-truth identifiers read from the process environment. Claude Code exports
+    # CLAUDE_CODE_SESSION_ID for every session; ITERM_SESSION_ID is set by iTerm in the
+    # spawning shell. These are reliable even when the cmdline carries no --resume flag.
+    env_session_id: str | None = None
+    iterm_session_env: str | None = None
 
 
 def scan_claude_processes() -> list[ProcInfo]:
@@ -146,6 +151,14 @@ def scan_claude_processes() -> list[ProcInfo]:
                 mem = proc.memory_info().rss / (1024 * 1024)
             except psutil.Error:
                 mem = 0.0
+            env_session_id = None
+            iterm_session_env = None
+            try:
+                env = proc.environ() or {}
+                env_session_id = env.get("CLAUDE_CODE_SESSION_ID")
+                iterm_session_env = env.get("ITERM_SESSION_ID")
+            except (psutil.AccessDenied, psutil.NoSuchProcess, ValueError):
+                pass
             out.append(
                 ProcInfo(
                     pid=proc.pid,
@@ -156,6 +169,8 @@ def scan_claude_processes() -> list[ProcInfo]:
                     memory_mb=float(mem),
                     cmdline=cmdline,
                     cmdline_parsed=parse_cmdline(cmdline),
+                    env_session_id=env_session_id,
+                    iterm_session_env=iterm_session_env,
                 )
             )
         except (psutil.NoSuchProcess, psutil.AccessDenied):
