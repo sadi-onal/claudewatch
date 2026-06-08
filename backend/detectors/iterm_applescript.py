@@ -1,6 +1,9 @@
-"""Fallback iTerm enumerator using plain AppleScript (no Python API needed).
+"""AppleScript-based iTerm session enumeration.
 
-Returns (window_id, tab_index, tty, unique_session_id, session_name) tuples.
+Plain-AppleScript fallback for when the iTerm2 Python API is unreachable
+(iTerm not running, Python API disabled, websocket churn, etc.). Used by
+[iterm_cache.py](iterm_cache.py); the pid → location matching itself lives in
+that cache.
 """
 from __future__ import annotations
 
@@ -8,14 +11,19 @@ import logging
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
-
-import psutil
 
 log = logging.getLogger(__name__)
 
 APPLESCRIPT_DIR = Path(__file__).resolve().parent.parent / "applescript"
 LIST_SCRIPT = APPLESCRIPT_DIR / "list_iterm_sessions.applescript"
+
+
+class ItermQueryError(Exception):
+    """Enumeration did not complete (timeout, osascript error, or iTerm unreachable).
+
+    Raised — rather than returning [] — so the caller's circuit breaker can tell a real
+    failure (iTerm hanging) apart from a genuine empty result (iTerm has no sessions).
+    """
 
 
 @dataclass
@@ -27,32 +35,38 @@ class ItermSessionTty:
     name: str
 
 
-@dataclass
-class ItermTtyLocation:
-    window_id: int
-    tab_index: int
-    tty: str
-    unique_id: str
-    name: str
+def list_iterm_sessions_via_applescript(timeout: float = 4.0) -> list[ItermSessionTty]:
+    """Return iTerm sessions enumerated via plain AppleScript.
 
-
-def list_iterm_sessions_via_applescript(timeout: float = 3.0) -> list[ItermSessionTty]:
-    """Return iTerm sessions enumerated via plain AppleScript. Returns [] on error."""
+    Raises ItermQueryError on timeout / osascript failure. On timeout the osascript
+    child is stopped with SIGTERM first (so it can tear down its in-flight Apple Event
+    to iTerm) and only SIGKILL'd as a last resort — a hard SIGKILL mid-enumeration is
+    what previously orphaned Apple Events and wedged iTerm's main thread.
+    """
     try:
-        r = subprocess.run(
+        proc = subprocess.Popen(
             ["osascript", str(LIST_SCRIPT)],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
         )
-    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-        log.debug("osascript list failed: %s", e)
-        return []
-    if r.returncode != 0:
-        log.debug("osascript returned %d: %s", r.returncode, r.stderr.strip())
-        return []
+    except FileNotFoundError as e:
+        raise ItermQueryError("osascript not found") from e
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        proc.terminate()  # SIGTERM — let osascript cancel its Apple Event cleanly
+        try:
+            proc.communicate(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+        raise ItermQueryError(f"osascript timed out after {timeout}s") from e
+    if proc.returncode != 0:
+        raise ItermQueryError(f"osascript returned {proc.returncode}: {stderr.strip()}")
+    r_stdout = stdout
     out: list[ItermSessionTty] = []
-    for line in r.stdout.splitlines():
+    for line in r_stdout.splitlines():
         line = line.strip()
         if not line:
             continue
@@ -73,60 +87,4 @@ def list_iterm_sessions_via_applescript(timeout: float = 3.0) -> list[ItermSessi
                 name=parts[4].strip(),
             )
         )
-    return out
-
-
-def _pid_tty(pid: int) -> str | None:
-    try:
-        return psutil.Process(pid).terminal()
-    except (psutil.NoSuchProcess, psutil.AccessDenied):
-        return None
-
-
-def _ancestor_ttys(pid: int, max_depth: int = 12) -> list[str]:
-    out: list[str] = []
-    try:
-        proc = psutil.Process(pid)
-    except psutil.NoSuchProcess:
-        return out
-    cur = proc
-    for _ in range(max_depth):
-        try:
-            t = cur.terminal()
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            break
-        if t and t not in out:
-            out.append(t)
-        try:
-            parent = cur.parent()
-            if parent is None:
-                break
-            cur = parent
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            break
-    return out
-
-
-def link_pids_to_iterm_applescript(
-    claude_pids: Iterable[int],
-    sessions: list[ItermSessionTty] | None = None,
-) -> dict[int, ItermTtyLocation]:
-    if sessions is None:
-        sessions = list_iterm_sessions_via_applescript()
-    if not sessions:
-        return {}
-    by_tty: dict[str, ItermSessionTty] = {s.tty: s for s in sessions if s.tty and s.tty != "?"}
-    out: dict[int, ItermTtyLocation] = {}
-    for pid in claude_pids:
-        for tty in _ancestor_ttys(pid):
-            if tty in by_tty:
-                s = by_tty[tty]
-                out[pid] = ItermTtyLocation(
-                    window_id=s.window_id,
-                    tab_index=s.tab_index,
-                    tty=s.tty,
-                    unique_id=s.unique_id,
-                    name=s.name,
-                )
-                break
     return out
