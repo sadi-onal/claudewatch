@@ -72,6 +72,10 @@ def start(daemon: bool = typer.Option(False, "--daemon", "-d", help="Detach to b
                     str(port),
                     "--log-level",
                     "info",
+                    # Force-close lingering SSE connections after 3s on shutdown so
+                    # SIGTERM (claudewatch stop) actually terminates the server.
+                    "--timeout-graceful-shutdown",
+                    "3",
                 ],
                 stdout=logf,
                 stderr=logf,
@@ -90,6 +94,41 @@ def start(daemon: bool = typer.Option(False, "--daemon", "-d", help="Detach to b
     )
 
 
+def _escalating_stop(
+    pid: int,
+    kill,
+    alive,
+    term_polls: int = 30,
+    kill_polls: int = 15,
+    sleeper=None,
+) -> bool:
+    """SIGTERM, then SIGKILL if the process survives. Return True iff it is gone.
+
+    uvicorn's graceful shutdown blocks on long-lived SSE connections, so a plain
+    SIGTERM can hang forever — we must escalate. `kill(pid, sig)` and `alive(pid)`
+    are injected for testability; `sleeper` runs between polls.
+    """
+    if sleeper is None:
+        sleeper = lambda: time.sleep(0.2)
+    try:
+        kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return True
+    for _ in range(term_polls):
+        if not alive(pid):
+            return True
+        sleeper()
+    try:
+        kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return True
+    for _ in range(kill_polls):
+        if not alive(pid):
+            return True
+        sleeper()
+    return not alive(pid)
+
+
 @app.command()
 def stop() -> None:
     """Stop a daemonized ClaudeWatch server."""
@@ -97,16 +136,20 @@ def stop() -> None:
     if not pid:
         console.print("[yellow]No running server found[/yellow]")
         return
-    os.kill(pid, signal.SIGTERM)
-    deadline = time.time() + 5
-    while time.time() < deadline:
+
+    def _alive(p: int) -> bool:
         try:
-            os.kill(pid, 0)
+            os.kill(p, 0)
+            return True
         except ProcessLookupError:
-            break
-        time.sleep(0.2)
+            return False
+
+    gone = _escalating_stop(pid, os.kill, _alive)
     PID_FILE.unlink(missing_ok=True)
-    console.print(f"[green]Stopped PID {pid}[/green]")
+    if gone:
+        console.print(f"[green]Stopped PID {pid}[/green]")
+    else:
+        console.print(f"[red]Failed to stop PID {pid} — still running[/red]")
 
 
 @app.command()
