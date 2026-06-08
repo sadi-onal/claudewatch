@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -140,7 +141,7 @@ async def halt(pid: int, request: Request):
             os.kill(pid, 0)
         except ProcessLookupError:
             return {"success": True, "exited": True}
-        time.sleep(0.2)
+        await asyncio.sleep(0.2)  # async — don't block the event loop while polling
     return {"success": True, "exited": False, "note": "SIGINT sent; process still running"}
 
 
