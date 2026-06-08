@@ -166,6 +166,19 @@
                 </template>
               </div>
 
+              <!-- Claude session id — click to copy (use with `claude --resume <id>`) -->
+              <template x-if="sess.conversation_id || sess.session_id">
+                <div class="flex items-center gap-2 text-xs text-zinc-400 min-w-0">
+                  <span>🆔</span>
+                  <button @click="copyId(sess.conversation_id || sess.session_id)"
+                          class="font-mono text-zinc-300 hover:text-emerald-300 truncate"
+                          :title="'Click to copy: ' + (sess.conversation_id || sess.session_id)"
+                          x-text="sess.conversation_id || sess.session_id"></button>
+                  <span x-show="copiedId === (sess.conversation_id || sess.session_id)"
+                        class="text-emerald-400 text-[11px] shrink-0">copied ✓</span>
+                </div>
+              </template>
+
               <div class="flex items-center gap-2 text-xs text-zinc-400">
                 <template x-if="sess.location_type === 'iterm'">
                   <span>🖥  iTerm · win <span x-text="sess.iterm_window_id"></span> · tab <span x-text="sess.iterm_tab_title || sess.iterm_tab_id"></span></span>

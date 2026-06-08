@@ -10,6 +10,7 @@ function appRoot() {
     filters: ["All", "iTerm", "Tmux", "Headless", "Working", "Idle", "High-cost"],
     detailPid: null,
     detail: null,
+    copiedId: null,
     showNewModal: false,
     newSession: { cwd: "", window_type: "new-window", skipPerm: true, customFlags: "" },
     newSessionError: "",
@@ -76,6 +77,15 @@ function appRoot() {
         const r = await fetch(`/api/sessions/${pid}`);
         if (r.ok) this.detail = await r.json();
       } catch (e) { /* ignore */ }
+    },
+
+    async copyId(id) {
+      if (!id) return;
+      try {
+        await navigator.clipboard.writeText(id);
+        this.copiedId = id;
+        setTimeout(() => { if (this.copiedId === id) this.copiedId = null; }, 1500);
+      } catch (e) { /* clipboard unavailable */ }
     },
 
     connectSSE() {
