@@ -10,6 +10,7 @@ function appRoot() {
     filters: ["All", "iTerm", "Tmux", "Headless", "Working", "Idle", "High-cost"],
     detailPid: null,
     detail: null,
+    detailError: false,
     copiedId: null,
     showNewModal: false,
     newSession: { cwd: "", window_type: "new-window", skipPerm: true, customFlags: "" },
@@ -73,10 +74,13 @@ function appRoot() {
       await this.saveConfig({ pricing: next });
     },
     async loadDetail(pid) {
+      this.detail = null;
+      this.detailError = false;
       try {
         const r = await fetch(`/api/sessions/${pid}`);
         if (r.ok) this.detail = await r.json();
-      } catch (e) { /* ignore */ }
+        else this.detailError = true;  // 404 etc. — session likely ended
+      } catch (e) { this.detailError = true; }
     },
 
     async copyId(id) {
@@ -93,7 +97,13 @@ function appRoot() {
         this._sse = new EventSource("/api/stream");
         this._sse.addEventListener("snapshot", (e) => {
           const data = JSON.parse(e.data);
-          if (data.sessions) this.sessions = data.sessions;
+          if (data.sessions) {
+            this.sessions = data.sessions;
+            // Close the detail modal if the session it shows is gone from the snapshot.
+            if (this.detailPid !== null && !data.sessions.some((s) => s.pid === this.detailPid)) {
+              this.detailPid = null; this.detail = null; this.detailError = false;
+            }
+          }
         });
         this._sse.addEventListener("session.started", (e) => {
           const d = JSON.parse(e.data);
@@ -105,7 +115,10 @@ function appRoot() {
         });
         this._sse.addEventListener("session.ended", (e) => {
           const d = JSON.parse(e.data);
-          if (d.pid) this.sessions = this.sessions.filter((s) => s.pid !== d.pid);
+          if (d.pid) {
+            this.sessions = this.sessions.filter((s) => s.pid !== d.pid);
+            if (this.detailPid === d.pid) { this.detailPid = null; this.detail = null; this.detailError = false; }
+          }
         });
         this._sse.onerror = () => {
           if (this._sse) this._sse.close();
@@ -131,8 +144,9 @@ function appRoot() {
           arr = arr.filter((s) => s.usage && (s.usage.cost_estimate_usd || 0) >= 1.0);
           break;
       }
-      // Most recently-active first
-      arr.sort((a, b) => (b.last_activity_at || "").localeCompare(a.last_activity_at || ""));
+      // Newest session first: most recently created (shortest uptime) at the top.
+      // started_at is an ISO-8601 string, so lexical compare orders it correctly.
+      arr.sort((a, b) => (b.started_at || "").localeCompare(a.started_at || ""));
       return arr;
     },
 
