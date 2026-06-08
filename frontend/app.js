@@ -21,7 +21,9 @@ function appRoot() {
       await Promise.all([this.loadHealth(), this.loadSessions(), this.loadStats(), this.loadConfig()]);
       this.connectSSE();
       this._startNowTimer();
-      setInterval(() => this.loadStats(), 5000);
+      // Active counts/tokens/cost are derived client-side from the live (SSE-pushed)
+      // sessions, so /api/stats only needs to refresh the 24h/today history numbers.
+      setInterval(() => this.loadStats(), 30000);
       setInterval(() => this.loadHealth(), 30000);
     },
 
@@ -93,6 +95,7 @@ function appRoot() {
     },
 
     connectSSE() {
+      if (this._sse) { try { this._sse.close(); } catch (e) { /* noop */ } this._sse = null; }
       try {
         this._sse = new EventSource("/api/stream");
         this._sse.addEventListener("snapshot", (e) => {
@@ -148,6 +151,20 @@ function appRoot() {
       // started_at is an ISO-8601 string, so lexical compare orders it correctly.
       arr.sort((a, b) => (b.started_at || "").localeCompare(a.started_at || ""));
       return arr;
+    },
+
+    // Active stats derived from the live sessions (no polling needed).
+    activeCount() { return this.sessions.length; },
+    activeTokens() {
+      return this.sessions.reduce((sum, s) => {
+        const u = s.usage;
+        if (!u) return sum;
+        return sum + (u.input_tokens || 0) + (u.output_tokens || 0)
+          + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+      }, 0);
+    },
+    activeCost() {
+      return this.sessions.reduce((sum, s) => sum + ((s.usage && s.usage.cost_estimate_usd) || 0), 0);
     },
 
     nowTick: 0,

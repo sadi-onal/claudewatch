@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -36,6 +37,7 @@ class AppState:
     iterm_cache: ItermLocationCache | None = None
     tmux_cache: TmuxLocationCache | None = None
     state: State | None = None
+    last_sig: dict[int, str] = field(default_factory=dict)
     sse_queues: set[asyncio.Queue] = field(default_factory=set)
 
     async def broadcast(self, event: dict) -> None:
@@ -47,6 +49,24 @@ class AppState:
                 dead.append(q)
         for d in dead:
             self.sse_queues.discard(d)
+
+
+# Fields that change almost every scan tick but aren't worth pushing to clients on their
+# own (CPU/mem jitter, ever-incrementing timers). Excluding them from the change signature
+# means an otherwise-idle session stops emitting an SSE update every 2s. The frontend keeps
+# elapsed/"active Xs ago" counters ticking client-side, and any *real* change (status,
+# tokens, task, context, in-flight) still flips the signature and broadcasts.
+_VOLATILE_FIELDS = frozenset(
+    {"cpu_percent", "memory_mb", "duration_seconds", "current_task_elapsed_seconds", "last_activity_at"}
+)
+
+
+def _significant_signature(dump: dict) -> str:
+    return json.dumps(
+        {k: v for k, v in dump.items() if k not in _VOLATILE_FIELDS},
+        sort_keys=True,
+        default=str,
+    )
 
 
 async def _scheduler_loop(s: AppState) -> None:
@@ -63,19 +83,27 @@ async def _scheduler_loop(s: AppState) -> None:
             prev = s.sessions
             new_map = {x.pid: x for x in new_sessions}
 
-            # Detect new + ended + persist
+            # Detect new + ended + persist. Only broadcast an update when something
+            # meaningful changed (see _significant_signature) — avoids pushing a full
+            # snapshot of every session every tick.
             for pid, sess in new_map.items():
+                dump = sess.model_dump(mode="json")
                 if pid not in prev:
-                    await s.broadcast({"event": "session.started", "session": sess.model_dump(mode="json")})
+                    await s.broadcast({"event": "session.started", "session": dump})
                     s.sessions_started_at[pid] = sess.started_at
+                    s.last_sig[pid] = _significant_signature(dump)
                 else:
-                    await s.broadcast({"event": "session.updated", "session": sess.model_dump(mode="json")})
+                    sig = _significant_signature(dump)
+                    if sig != s.last_sig.get(pid):
+                        await s.broadcast({"event": "session.updated", "session": dump})
+                        s.last_sig[pid] = sig
                 if s.state:
                     await s.state.upsert_active(sess)
 
             for pid in list(prev.keys()):
                 if pid not in new_map:
                     await s.broadcast({"event": "session.ended", "pid": pid})
+                    s.last_sig.pop(pid, None)
                     if s.state:
                         started = s.sessions_started_at.pop(pid, prev[pid].started_at)
                         await s.state.mark_ended(pid, started)
@@ -133,6 +161,17 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     app = FastAPI(title="ClaudeWatch", version="0.2.0", lifespan=lifespan)
+
+    @app.middleware("http")
+    async def _no_cache_static(request, call_next):
+        # The dashboard's HTML/JS/CSS are tiny and local; never let the browser serve a
+        # stale copy (a cached app.js against a newer index.html breaks the page).
+        resp = await call_next(request)
+        path = request.url.path
+        if path == "/" or path.startswith("/static"):
+            resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return resp
+
     app.include_router(sessions.router)
     app.include_router(actions.router)
     app.include_router(stream.router)
