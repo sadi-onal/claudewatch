@@ -128,15 +128,32 @@ async def build_sessions(
         cpu_history = _update_cpu_history(state, p.pid, p.cpu_percent)
         cwd = p.cwd or ""
 
-        # Conversation log — prefer cmdline session_id if present
+        # Resolve which conversation log belongs to THIS process, in order:
+        #   1. env CLAUDE_CODE_SESSION_ID — but only if a matching <id>.jsonl exists in this
+        #      cwd's folder. macOS leaks the *caller's* env id onto processes it can't read,
+        #      so an env id whose log lives in another folder is bogus and must be ignored.
+        #   2. cmdline --resume / --session-id, likewise verified against this folder.
+        #   3. freshest log in the folder (best-effort; ambiguous when >1 claude shares a cwd).
+        #
+        # trusted_session_id is set only for (1) and (2) and is the de-dup key. The freshest
+        # fallback is never trusted for de-dup: every claude in a shared cwd resolves to the
+        # same freshest file and would otherwise look like a false duplicate.
         parsed: ParsedLog | None = None
-        session_id = p.cmdline_parsed.get("session_id")
+        trusted_session_id: str | None = None
+        env_sid = p.env_session_id
+        cmd_sid = p.cmdline_parsed.get("session_id")
         if cwd:
             logs = find_logs_for_cwd(cwd, state.log_dir)
+            stems = {lp.stem for lp in logs}
+            if env_sid and env_sid in stems:
+                trusted_session_id = env_sid
+            elif cmd_sid and cmd_sid in stems:
+                trusted_session_id = cmd_sid
             chosen = None
-            if session_id and logs:
+            target = trusted_session_id or cmd_sid
+            if target and logs:
                 for lp in logs:
-                    if lp.stem == session_id:
+                    if lp.stem == target:
                         chosen = lp
                         break
             if chosen is None and logs:
@@ -263,6 +280,7 @@ async def build_sessions(
                 cli_version=parsed.cli_version if parsed else None,
                 conversation_id=parsed.conversation_id if parsed else None,
                 conversation_log_path=str(parsed.log_path) if parsed else None,
+                session_id=trusted_session_id,
                 message_count=parsed.message_count if parsed else 0,
                 usage=usage,
                 thinking_enabled=parsed.thinking_enabled if parsed else None,
@@ -285,4 +303,22 @@ async def build_sessions(
                 current_task_elapsed_seconds=current_task_elapsed,
             )
         )
+
+    # Duplicate detection: group live processes by their *trusted* session id only. A pure
+    # latest-mtime conversation_id is never used here — every claude in a shared cwd resolves
+    # to the same freshest file, which would manufacture false duplicates. A duplicate warning
+    # has to be trustworthy or it's noise.
+    groups: dict[str, list[int]] = defaultdict(list)
+    for s in sessions:
+        if s.session_id:
+            groups[s.session_id].append(s.pid)
+    for s in sessions:
+        pids_in_group = groups.get(s.session_id) if s.session_id else None
+        if pids_in_group and len(pids_in_group) > 1:
+            s.duplicate_count = len(pids_in_group)
+            s.duplicate_pids = [pid for pid in pids_in_group if pid != s.pid]
+        else:
+            s.duplicate_count = 1
+            s.duplicate_pids = []
+
     return sessions

@@ -74,6 +74,13 @@ class ClaudeSession(BaseModel):
     cli_version: str | None = None
     conversation_id: str | None = None
     conversation_log_path: str | None = None
+    # Ground-truth session id from the process env (CLAUDE_CODE_SESSION_ID). Present even
+    # when no conversation log has been written yet, so it's the reliable de-dup key.
+    session_id: str | None = None
+    # How many live processes are attached to this same session (1 = unique). >1 means the
+    # same Claude session is open from multiple CLIs — usually accidental.
+    duplicate_count: int = 1
+    duplicate_pids: list[int] = Field(default_factory=list)
     message_count: int = 0
     usage: TokenUsage | None = None
     thinking_enabled: bool | None = None

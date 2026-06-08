@@ -105,6 +105,11 @@
                 <span class="text-xs text-zinc-500" x-text="'· ' + fmtDuration(sess.duration_seconds)"></span>
                 <span class="text-xs text-zinc-500" x-text="'· active ' + relTime(sess.last_activity_at)"></span>
                 <span x-show="sess.thinking_enabled" class="text-xs text-violet-300/90 ml-1">🧠</span>
+                <span x-show="sess.duplicate_count > 1"
+                      class="text-[10px] font-semibold uppercase px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-300 border border-amber-600/50 ml-1"
+                      :title="'Same Claude session attached from ' + sess.duplicate_count + ' CLIs (PIDs: ' + (sess.duplicate_pids || []).join(', ') + ')'">
+                  ⚠ <span x-text="sess.duplicate_count"></span>× CLIs
+                </span>
               </div>
               <div class="flex items-center gap-1">
                 <template x-if="sess.permission_mode === 'dangerously-skip' || sess.permission_mode === 'bypassPermissions'">
