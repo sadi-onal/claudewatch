@@ -25,11 +25,16 @@ def find_log_dir() -> Path | None:
 
 
 def cwd_to_project_folder(cwd: str) -> str:
-    """Convert /Users/x/Projects/y to -Users-x-Projects-y (Claude Code convention)."""
+    """Convert /Users/x/Projects/y to -Users-x-Projects-y (Claude Code convention).
+
+    Claude Code encodes both `/` and `.` as `-`, so usernames like `first.last`
+    (common with macOS AD-joined accounts) and dotted directories like
+    `.claude` map to `first-last` and `-claude` respectively.
+    """
     cwd = cwd.rstrip("/")
     if not cwd:
         return ""
-    return cwd.replace("/", "-")
+    return cwd.replace("/", "-").replace(".", "-")
 
 
 def find_logs_for_cwd(cwd: str, log_dir: Path | None = None) -> list[Path]:
