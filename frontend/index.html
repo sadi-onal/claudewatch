@@ -76,8 +76,32 @@
         </div>
       </section>
 
+      <!-- Controls: search + sort + find-my-session -->
+      <div class="flex items-center gap-2 mb-3 flex-wrap">
+        <input x-model="query" type="search" placeholder="Search topic, repo, branch, message, id…"
+               class="bg-zinc-900 border border-zinc-800 rounded-md px-3 py-1.5 text-sm text-zinc-200 placeholder-zinc-500 w-72 focus:outline-none focus:border-zinc-600" />
+        <select x-model="sortBy" title="Sort sessions"
+                class="bg-zinc-900 border border-zinc-800 rounded-md px-2 py-1.5 text-sm text-zinc-200 focus:outline-none focus:border-zinc-600">
+          <option value="created-new">Newest created</option>
+          <option value="created-old">Oldest created</option>
+          <option value="active">Recently active</option>
+          <option value="context">Context % (high→low)</option>
+          <option value="cost">Cost (high→low)</option>
+          <option value="status">Status (busy first)</option>
+        </select>
+        <button @click="findMySession()" :disabled="finding"
+                title="Highlight the session in your frontmost iTerm tab"
+                class="px-3 py-1.5 rounded-md border border-emerald-700/50 bg-emerald-900/30 text-emerald-200 text-sm hover:bg-emerald-900/50 disabled:opacity-50">
+          <span x-text="finding ? 'Finding…' : '◎ Find my session'"></span>
+        </button>
+        <span x-show="!finding && myItermSessionId" class="text-xs">
+          <span x-show="myFound" class="text-emerald-300">↓ highlighted</span>
+          <span x-show="!myFound" class="text-amber-300/80">frontmost iTerm tab isn't in the list</span>
+        </span>
+      </div>
+
       <!-- Filter chips -->
-      <div class="flex items-center gap-2 mb-4 text-sm flex-wrap">
+      <div class="flex items-center gap-2 mb-2 text-sm flex-wrap">
         <template x-for="f in filters" :key="f">
           <button @click="filter=f"
                   :class="filter===f ? 'bg-zinc-700 text-white border-zinc-600' : 'bg-zinc-900 text-zinc-300 border-zinc-800 hover:border-zinc-700'"
@@ -88,10 +112,27 @@
         </template>
       </div>
 
+      <!-- Status legend -->
+      <div class="flex items-center gap-x-4 gap-y-1 mb-4 text-[11px] text-zinc-500 flex-wrap">
+        <span class="flex items-center gap-1.5"><span class="size-2 rounded-full bg-emerald-400 ring-2 ring-emerald-400/40"></span> in flight — a tool call is running</span>
+        <span class="flex items-center gap-1.5"><span class="size-2 rounded-full bg-emerald-400"></span> working — actively running</span>
+        <span class="flex items-center gap-1.5"><span class="size-2 rounded-full bg-amber-400"></span> waiting — idle but recently active</span>
+        <span class="flex items-center gap-1.5"><span class="size-2 rounded-full bg-zinc-500"></span> idle — no recent activity</span>
+      </div>
+
       <!-- Session cards -->
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <template x-for="sess in visibleSessions()" :key="sess.pid">
-          <article class="rounded-xl border border-zinc-800 bg-zinc-900/40 p-4 hover:border-zinc-700 transition">
+          <article :data-sid="sess.iterm_session_id"
+                   class="rounded-xl border bg-zinc-900/40 p-4 transition"
+                   :class="isMine(sess) ? 'border-emerald-500/70 ring-2 ring-emerald-500/50' : 'border-zinc-800 hover:border-zinc-700'">
+
+            <!-- Topic — what this session is about (primary identifier) -->
+            <div class="flex items-center gap-2 mb-2 min-w-0">
+              <span x-show="isMine(sess)" class="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-emerald-500 text-emerald-950 shrink-0">you</span>
+              <h3 class="text-sm font-semibold text-zinc-100 truncate" :title="sessionTitle(sess)" x-text="sessionTitle(sess)"></h3>
+            </div>
+
             <header class="flex items-start justify-between gap-3 mb-3">
               <div class="flex items-center gap-2 min-w-0">
                 <span class="size-2 rounded-full shrink-0"
@@ -170,6 +211,14 @@
                   </span>
                 </template>
               </div>
+
+              <!-- Last user prompt — a human-readable label for the session -->
+              <template x-if="sess.last_user_message">
+                <div class="flex items-start gap-2 text-xs text-zinc-400 min-w-0" title="Your most recent prompt in this session">
+                  <span class="shrink-0">💬</span>
+                  <span class="truncate italic" x-text="sess.last_user_message"></span>
+                </div>
+              </template>
 
               <!-- Claude session id — click to copy (use with `claude --resume <id>`) -->
               <template x-if="sess.conversation_id || sess.session_id">

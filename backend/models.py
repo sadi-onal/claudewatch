@@ -81,6 +81,9 @@ class ClaudeSession(BaseModel):
     # same Claude session is open from multiple CLIs — usually accidental.
     duplicate_count: int = 1
     duplicate_pids: list[int] = Field(default_factory=list)
+    # The user's most recent typed prompt — a human-readable label for the session.
+    # Only populated when show_log_text is enabled (privacy).
+    last_user_message: str | None = None
     message_count: int = 0
     usage: TokenUsage | None = None
     thinking_enabled: bool | None = None

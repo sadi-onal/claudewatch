@@ -74,6 +74,9 @@ class ParsedLog:
     last_activity_at: datetime | None = None
     cwd: str | None = None
     git_branch: str | None = None
+    # The user's most recent typed prompt (best-effort; tool results and injected
+    # command/system messages are skipped). Used as a human-readable session label.
+    last_user_message: str | None = None
     # Latest assistant turn (NOT cumulative) — for context % and "current-turn" display
     last_assistant_at: datetime | None = None
     last_assistant_usage: TokenUsage = field(default_factory=TokenUsage)
@@ -128,6 +131,27 @@ def parse_log(path: Path) -> ParsedLog:
                         pl.permission_mode = pm
                 elif etype in ("user", "assistant"):
                     pl.message_count += 1
+                if etype == "user":
+                    msg = entry.get("message") or {}
+                    content = msg.get("content")
+                    text = None
+                    if isinstance(content, str):
+                        text = content
+                    elif isinstance(content, list):
+                        for block in content:
+                            if isinstance(block, str):
+                                text = block
+                                break
+                            if isinstance(block, dict) and block.get("type") == "text":
+                                text = block.get("text")
+                                break
+                            # tool_result blocks have no user-typed text → skip
+                    if text:
+                        t = text.strip()
+                        # Skip injected command output / system-reminder / caveat wrappers,
+                        # keeping only what the user actually typed.
+                        if t and not t.startswith("<") and not t.startswith("Caveat:"):
+                            pl.last_user_message = t[:280]
                 if etype == "assistant":
                     msg = entry.get("message") or {}
                     model = msg.get("model")

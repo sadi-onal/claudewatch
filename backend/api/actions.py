@@ -145,6 +145,32 @@ async def halt(pid: int, request: Request):
     return {"success": True, "exited": False, "note": "SIGINT sent; process still running"}
 
 
+@router.get("/iterm/current")
+async def iterm_current():
+    """Unique id of the frontmost iTerm session — used by the dashboard's 'find my
+    session' action to highlight the tab you're in. A single light AppleScript query
+    (no window enumeration), run only on demand."""
+    # `window 1` (frontmost iTerm window) rather than `current window`: the latter errors
+    # (-1728) when iTerm isn't the active app — which it isn't while you're viewing this
+    # dashboard in a browser. window 1 resolves to the last-focused iTerm window/tab.
+    script = (
+        'tell application "iTerm" to tell window 1 '
+        "to tell current tab to tell current session to id"
+    )
+    try:
+        r = await asyncio.to_thread(
+            subprocess.run,
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            timeout=4,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return {"current": None}
+    sid = r.stdout.strip() if r.returncode == 0 else ""
+    return {"current": sid or None}
+
+
 @router.post("/sessions/{pid}/focus")
 async def focus(pid: int, request: Request):
     _check_read_only(request)
