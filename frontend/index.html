@@ -207,7 +207,7 @@
                 <span class="font-mono text-xs truncate" :title="sess.cwd" x-text="sess.cwd || '—'"></span>
                 <template x-if="sess.git && sess.git.branch">
                   <span class="text-xs text-emerald-300/80 ml-1">
-                    🌿 <span x-text="sess.git.branch"></span><template x-if="sess.git.is_dirty"><span class="text-amber-300/80"> · <span x-text="sess.git.modified_count"></span> dirty</span></template>
+                    🌿 <span x-text="sess.git.branch"></span><template x-if="sess.git.is_dirty"><span class="text-amber-300/80"> · <span x-text="sess.git.modified_count"></span> dirty</span></template><template x-if="sess.git.insertions || sess.git.deletions"><span class="ml-1" title="Uncommitted changes vs HEAD (lines added / removed)"><span class="text-emerald-400" x-text="'+' + sess.git.insertions"></span> <span class="text-rose-400" x-text="'−' + sess.git.deletions"></span></span></template>
                   </span>
                 </template>
               </div>

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend.api import actions, config_api, health, history, sessions, stream
@@ -185,9 +185,22 @@ def create_app() -> FastAPI:
     @app.get("/")
     async def index():
         path = FRONTEND_DIR / "index.html"
-        if path.is_file():
-            return FileResponse(str(path))
-        return {"message": "ClaudeWatch backend running. Frontend not yet built."}
+        if not path.is_file():
+            return {"message": "ClaudeWatch backend running. Frontend not yet built."}
+        html = path.read_text(encoding="utf-8")
+        # Cache-bust static assets with their mtime so a freshly-served index.html can never
+        # pair with a stale cached app.js/styles.css — a mismatch silently breaks methods
+        # like activeCount()/sessionTitle() and leaves blank stats / missing titles.
+        try:
+            ver = int(max(
+                (FRONTEND_DIR / f).stat().st_mtime
+                for f in ("app.js", "styles.css", "index.html")
+            ))
+        except OSError:
+            ver = 0
+        html = html.replace("/static/app.js", f"/static/app.js?v={ver}")
+        html = html.replace("/static/styles.css", f"/static/styles.css?v={ver}")
+        return HTMLResponse(html)
 
     return app
 

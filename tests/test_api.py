@@ -222,3 +222,16 @@ def test_log_tail_shows_text_when_show_log_text_true(populated_app, tmp_path):
     data = r.json()
     assert data["privacy_mode"] is False
     assert data["entries"][0]["message"]["content"][0]["text"] == "hello"
+
+
+def test_index_cache_busts_static_assets(app):
+    """A freshly-served index.html must reference versioned asset URLs (and be no-store),
+    so the browser can't pair it with a stale cached app.js/styles.css."""
+    client, _ = app
+    r = client.get("/")
+    assert r.status_code == 200
+    body = r.text
+    assert "/static/app.js?v=" in body
+    assert "/static/styles.css?v=" in body
+    cc = r.headers.get("cache-control", "")
+    assert "no-store" in cc
