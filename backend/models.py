@@ -41,6 +41,8 @@ class GitContext(BaseModel):
     branch: str | None = None
     is_dirty: bool = False
     modified_count: int = 0
+    insertions: int = 0
+    deletions: int = 0
 
 
 SessionStatus = Literal["working", "waiting", "idle", "ended"]

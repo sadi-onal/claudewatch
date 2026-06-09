@@ -32,4 +32,29 @@ def get_git_context(cwd: str, timeout: float = 1.0) -> GitContext | None:
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return GitContext(branch=branch, is_dirty=False, modified_count=0)
     lines = [ln for ln in porcelain.splitlines() if ln.strip()]
-    return GitContext(branch=branch, is_dirty=bool(lines), modified_count=len(lines))
+
+    insertions = deletions = 0
+    if lines:  # only pay for the diff when the tree is actually dirty
+        try:
+            r3 = subprocess.run(
+                ["git", "-C", str(p), "diff", "--numstat", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            if r3.returncode == 0:
+                for ln in r3.stdout.splitlines():
+                    cols = ln.split("\t")
+                    if len(cols) >= 2 and cols[0].isdigit() and cols[1].isdigit():
+                        insertions += int(cols[0])
+                        deletions += int(cols[1])
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+
+    return GitContext(
+        branch=branch,
+        is_dirty=bool(lines),
+        modified_count=len(lines),
+        insertions=insertions,
+        deletions=deletions,
+    )
