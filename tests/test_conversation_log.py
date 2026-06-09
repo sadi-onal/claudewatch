@@ -86,3 +86,19 @@ def test_parse_log_handles_malformed_lines(tmp_path):
     assert pl.model == "claude-opus-4-7"
     assert pl.usage.input_tokens == 10
     assert pl.message_count == 2
+
+
+def test_parse_log_extracts_last_user_message(tmp_path):
+    """last_user_message is the user's most recent typed prompt; tool results and
+    injected command/system messages are skipped."""
+    p = tmp_path / "sess.jsonl"
+    lines = [
+        '{"type":"user","message":{"role":"user","content":"first question"}}',
+        '{"type":"assistant","message":{"model":"claude-opus-4-7","content":[],"usage":{"input_tokens":1}}}',
+        '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"second and latest question"}]}}',
+        '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"x"}]}}',
+        '{"type":"user","message":{"role":"user","content":"<command-name>/foo</command-name>"}}',
+    ]
+    p.write_text("\n".join(lines) + "\n")
+    pl = parse_log(p)
+    assert pl.last_user_message == "second and latest question"

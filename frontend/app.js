@@ -8,6 +8,11 @@ function appRoot() {
     config: { pricing: {} },
     filter: "All",
     filters: ["All", "iTerm", "Tmux", "Headless", "Working", "Idle", "High-cost"],
+    sortBy: "created-new",
+    query: "",
+    myItermSessionId: null,
+    myFound: false,
+    finding: false,
     detailPid: null,
     detail: null,
     detailError: false,
@@ -147,10 +152,63 @@ function appRoot() {
           arr = arr.filter((s) => s.usage && (s.usage.cost_estimate_usd || 0) >= 1.0);
           break;
       }
-      // Newest session first: most recently created (shortest uptime) at the top.
-      // started_at is an ISO-8601 string, so lexical compare orders it correctly.
-      arr.sort((a, b) => (b.started_at || "").localeCompare(a.started_at || ""));
+      // Search across content (not PID-first): topic, repo, branch, last message, ids.
+      const q = (this.query || "").trim().toLowerCase();
+      if (q) {
+        arr = arr.filter((s) => {
+          const hay = [
+            this.sessionTitle(s), s.cwd, s.git && s.git.branch, s.iterm_tab_title,
+            s.last_user_message, s.conversation_id, s.session_id, s.model, String(s.pid),
+          ].filter(Boolean).join(" ").toLowerCase();
+          return hay.includes(q);
+        });
+      }
+      arr.sort(this._sorter());
       return arr;
+    },
+
+    _sorter() {
+      const started = (x) => x.started_at || "";
+      switch (this.sortBy) {
+        case "created-old": return (a, b) => started(a).localeCompare(started(b));
+        case "active": return (a, b) => (b.last_activity_at || "").localeCompare(a.last_activity_at || "");
+        case "context": return (a, b) => (b.context_pct || 0) - (a.context_pct || 0);
+        case "cost": return (a, b) => ((b.usage && b.usage.cost_estimate_usd) || 0) - ((a.usage && a.usage.cost_estimate_usd) || 0);
+        case "status": {
+          const rank = (s) => s.is_in_flight ? 0 : s.status === "working" ? 1 : s.status === "waiting" ? 2 : 3;
+          return (a, b) => rank(a) - rank(b) || started(b).localeCompare(started(a));
+        }
+        case "created-new":
+        default: return (a, b) => started(b).localeCompare(started(a));
+      }
+    },
+
+    // Human-readable label for a session (content, not PID).
+    sessionTitle(s) {
+      return s.iterm_tab_title || s.current_task_active_form || s.current_task_subject
+        || s.last_user_message || (s.cwd ? s.cwd.split("/").filter(Boolean).pop() : null)
+        || ("PID " + s.pid);
+    },
+    isMine(s) {
+      return !!this.myItermSessionId && s.iterm_session_id === this.myItermSessionId;
+    },
+    async findMySession() {
+      this.finding = true;
+      try {
+        const r = await fetch("/api/iterm/current");
+        if (r.ok) {
+          const d = await r.json();
+          this.myItermSessionId = d.current || null;
+          this.myFound = !!(this.myItermSessionId && this.sessions.some((s) => s.iterm_session_id === this.myItermSessionId));
+          if (this.myItermSessionId) {
+            this.$nextTick(() => {
+              const el = document.querySelector(`[data-sid="${this.myItermSessionId}"]`);
+              if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+            });
+          }
+        }
+      } catch (e) { /* ignore */ }
+      finally { this.finding = false; }
     },
 
     // Active stats derived from the live sessions (no polling needed).

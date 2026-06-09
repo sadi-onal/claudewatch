@@ -120,6 +120,7 @@ async def build_sessions(
 
     pricing_cfg = config.get("pricing", {})
     file_retention = int(config.get("file_change_retention_minutes", 10))
+    show_log_text = bool(config.get("show_log_text"))
 
     sessions: list[ClaudeSession] = []
     now = datetime.now(timezone.utc)
@@ -288,6 +289,7 @@ async def build_sessions(
                 conversation_id=parsed.conversation_id if parsed else None,
                 conversation_log_path=str(parsed.log_path) if parsed else None,
                 session_id=trusted_session_id,
+                last_user_message=(parsed.last_user_message if (parsed and show_log_text) else None),
                 message_count=parsed.message_count if parsed else 0,
                 usage=usage,
                 thinking_enabled=parsed.thinking_enabled if parsed else None,
